@@ -1,10 +1,9 @@
 import tensorflow as tf
-from tensorflow import keras
 from tensorflow.keras import layers, Sequential
 import numpy as np
 
 
-class TPS_SpatialTransformerNetwork(keras.Model):
+class TPS_SpatialTransformerNetwork(tf.keras.Model):
     def __init__(self, F, I_size, I_r_size, I_channel_num=1):
         super(TPS_SpatialTransformerNetwork, self).__init__()
         self.F = F
@@ -24,8 +23,8 @@ class TPS_SpatialTransformerNetwork(keras.Model):
         return batch_I_r
 
 
-class LocalizationNetwork(keras.Module):
-    def __init__(self, F, I_channel_num):
+class LocalizationNetwork(tf.keras.Model):
+    def __init__(self, num_fiducial, I_channel_num):
         super(LocalizationNetwork, self).__init__()
         self.F = F
         self.I_channel_num = I_channel_num

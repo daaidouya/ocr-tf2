@@ -1,34 +1,145 @@
 import tensorflow as tf
-from tensorflow import keras
 from tensorflow.keras import layers, Sequential
 
 
-class ResNet_FeatureExtractor(layers.Model):
+class VGG_FeatureExtractor(tf.keras.Model):
+    """ FeatureExtractor of CRNN (https://arxiv.org/pdf/1507.05717.pdf) """
+
+    def __init__(self, output_channel=512):
+        super(VGG_FeatureExtractor, self).__init__()
+        self.output_channel = [int(output_channel / 8), int(output_channel / 4),
+                               int(output_channel / 2), output_channel]  # [64, 128, 256, 512]
+        self.ConvNet = Sequential([
+            layers.Conv2D(self.output_channel[0], kernel_size=3, strides=1, padding='same', activation='relu'),
+            layers.MaxPool2D(pool_size=(2, 2), strides=2),
+            layers.Conv2D(self.output_channel[1], kernel_size=3, strides=1, padding='same', activation='relu'),
+            layers.MaxPool2D(pool_size=(2, 2), strides=2),
+            layers.Conv2D(self.output_channel[2], kernel_size=3, strides=1, padding='same', activation='relu'),
+            layers.Conv2D(self.output_channel[2], kernel_size=3, strides=1, padding='same', activation='relu'),
+            layers.MaxPool2D(pool_size=(2, 1), strides=(2, 1)),
+            layers.Conv2D(self.output_channel[3], kernel_size=3, strides=1, padding='same', use_bias=False),
+            layers.BatchNormalization(), layers.ReLU(),
+            layers.Conv2D(self.output_channel[3], kernel_size=3, strides=1, padding='same', use_bias=False),
+            layers.BatchNormalization(), layers.ReLU(),
+            layers.MaxPool2D(pool_size=(2, 1), strides=(2, 1)),
+            layers.Conv2D(self.output_channel[3], kernel_size=2, strides=1, padding='valid', activation='relu'),
+        ])
+
+    def call(self, inputs, training=None, mask=None):
+        # self.ConvNet.summary()
+        return self.ConvNet(inputs)
+
+
+class RCNN_FeatureExtractor(tf.keras.Model):
+    """ FeatureExtractor of GRCNN (https://papers.nips.cc/paper/6637-gated-recurrent-convolution-neural-network-for-ocr.pdf) """
+
+    def __init__(self, output_channel=512):
+        super(RCNN_FeatureExtractor, self).__init__()
+        self.output_channel = [int(output_channel / 8), int(output_channel / 4),
+                               int(output_channel / 2), output_channel]  # [64, 128, 256, 512]
+        self.ConvNet = Sequential([
+            layers.Conv2D(self.output_channel[0], kernel_size=3, strides=1, padding='same', activation='relu'),
+            layers.MaxPool2D(pool_size=(2, 2), strides=2),
+
+            GRCL(self.output_channel[0], num_iteration=5, kernel_size=3, pad=1),
+
+            layers.MaxPool2D(pool_size=(2, 2), strides=2),
+
+            GRCL(self.output_channel[1], num_iteration=5, kernel_size=3, pad=1),
+
+            # layers.MaxPool2D(2, (2, 1), (0, 1)),  # 128 x 4 x 26
+            layers.MaxPool2D(pool_size=(2, 2), strides=2),
+
+            GRCL(self.output_channel[2], num_iteration=5, kernel_size=3, pad=1),
+
+            # layers.MaxPool2D(2, (2, 1), (0, 1)),  # 256 x 2 x 27
+            layers.MaxPool2D(pool_size=(2, 2), strides=2),
+
+            layers.Conv2D(self.output_channel[3], kernel_size=2, strides=1, padding='valid'),
+            layers.BatchNormalization(), layers.ReLU(),
+        ])
+
+    def call(self, inputs, training=None, mask=None):
+        return self.ConvNet(inputs)
+
+
+class ResNet_FeatureExtractor(tf.keras.Model):
+    """ FeatureExtractor of FAN (http://openaccess.thecvf.com/content_ICCV_2017/papers/Cheng_Focusing_Attention_Towards_ICCV_2017_paper.pdf) """
+
     def __init__(self, input_channel, output_channel=512):
         super(ResNet_FeatureExtractor, self).__init__()
-        self.ConvNet = ResNet(input_channel, output_channel, BasicBlock)
+        self.ConvNet = ResNet(output_channel, [1, 2, 5, 3])
 
-    def call(self, inputs):
+    def call(self, inputs, training=None, mask=None):
         return self.ConvNet(inputs)
+
+
+# For Gated RCNN
+class GRCL(layers.Layer):
+
+    def __init__(self, output_channel, num_iteration, kernel_size, pad):
+        super(GRCL, self).__init__()
+        self.wgf_u = layers.Conv2D(output_channel, kernel_size=1, strides=1, padding='valid', use_bias=False)
+        self.wgr_x = layers.Conv2D(output_channel, kernel_size=1, strides=1, padding='valid', use_bias=False)
+
+        self.wf_u = layers.Conv2D(output_channel, kernel_size=kernel_size, strides=1, padding=pad, use_bias=False)
+        self.wr_x = layers.Conv2D(output_channel, kernel_size=kernel_size, strides=1, padding=pad, use_bias=False)
+        self.BN_x_init = layers.BatchNormalization()
+
+        self.num_iteration = num_iteration
+        self.GRCL = [GRCL_unit() for _ in range(num_iteration)]
+        self.GRCL = Sequential(self.GRCL)
+
+    def call(self, inputs, **kwargs):
+        """ The inputs of GRCL is consistant over time t, which is denoted by u(0)
+        thus wgf_u / wf_u is also consistant over time t.
+        """
+        wgf_u = self.wgf_u(inputs)
+        wf_u = self.wf_u(inputs)
+        x = tf.nn.relu(self.BN_x_init(wf_u))
+
+        for i in range(self.num_iteration):
+            x = self.GRCL[i](wgf_u, self.wgr_x(x), wf_u, self.wr_x(x))
+
+        return x
+
+
+class GRCL_unit(layers.Layer):
+
+    def __init__(self):
+        super(GRCL_unit, self).__init__()
+        self.BN_gfu = layers.BatchNormalization()
+        self.BN_grx = layers.BatchNormalization()
+        self.BN_fu = layers.BatchNormalization()
+        self.BN_rx = layers.BatchNormalization()
+        self.BN_Gx = layers.BatchNormalization()
+
+    def call(self, wgf_u, wgr_x, wf_u, wr_x):
+        G_first_term = self.BN_gfu(wgf_u)
+        G_second_term = self.BN_grx(wgr_x)
+        G = tf.nn.sigmoid(G_first_term + G_second_term)
+
+        x_first_term = self.BN_fu(wf_u)
+        x_second_term = self.BN_Gx(self.BN_rx(wr_x) * G)
+        x = tf.nn.relu(x_first_term + x_second_term)
+
+        return x
 
 
 class BasicBlock(layers.Layer):
     # 残差模块
-    def __init__(self, filter_num, stride=1):
+    def __init__(self, filter_num, stride=1, downsample=None):
         super(BasicBlock, self).__init__()
 
-        self.conv1 = layers.Conv2D(filter_num, (3, 3), strides=stride, padding='same')
+        self.conv1 = layers.Conv2D(filter_num, (3, 3), strides=stride, padding='same', use_bias=False)
         self.bn1 = layers.BatchNormalization()
         self.relu = layers.Activation('relu')
 
-        self.conv2 = layers.Conv2D(filter_num, (3, 3), strides=1, padding='same')
+        self.conv2 = layers.Conv2D(filter_num, (3, 3), strides=stride, padding='same', use_bias=False)
         self.bn2 = layers.BatchNormalization()
 
-        if stride != 1:
-            self.downsample = Sequential()
-            self.downsample.add(layers.Conv2D(filter_num, (1, 1), strides=stride))
-        else:
-            self.downsample = lambda x: x
+        self.downsample = downsample
+        self.stride = stride
 
     def call(self, inputs, training=None):
 
@@ -40,7 +151,9 @@ class BasicBlock(layers.Layer):
         out = self.conv2(out)
         out = self.bn2(out)
 
-        identity = self.downsample(inputs)
+        identity = inputs
+        if self.downsample is not None:
+            identity = self.downsample(inputs)
 
         output = layers.add([out, identity])
         output = tf.nn.relu(output)
@@ -48,154 +161,91 @@ class BasicBlock(layers.Layer):
         return output
 
 
-class ResNet(keras.Model):
-    # 通用的ResNet实现类
-    def __init__(self, layer_dims, num_classes=10): # [2, 2, 2, 2]
+class ResNet(tf.keras.Model):
+
+    def __init__(self, output_channel, layer_dims):
         super(ResNet, self).__init__()
-        # 根网络，预处理
-        self.stem = Sequential([layers.Conv2D(64, (3, 3), strides=(1, 1)),
-                                layers.BatchNormalization(),
-                                layers.Activation('relu'),
-                                layers.MaxPool2D(pool_size=(2, 2), strides=(1, 1), padding='same')
-                                ])
-        # 堆叠4个Block，每个block包含了多个BasicBlock,设置步长不一样
-        self.layer1 = self.build_resblock(64,  layer_dims[0])
-        self.layer2 = self.build_resblock(128, layer_dims[1], stride=2)
-        self.layer3 = self.build_resblock(256, layer_dims[2], stride=2)
-        self.layer4 = self.build_resblock(512, layer_dims[3], stride=2)
 
-        # 通过Pooling层将高宽降低为1x1
-        self.avgpool = layers.GlobalAveragePooling2D()
-        # 最后连接一个全连接层分类
-        self.fc = layers.Dense(num_classes)
+        self.output_channel_block = [int(output_channel / 4), int(output_channel / 2), output_channel, output_channel]
 
-    def call(self, inputs, training=None):
-        # 通过根网络
-        x = self.stem(inputs)
-        # 一次通过4个模块
+        self.inplanes = int(output_channel / 8)
+        self.conv0_1 = layers.Conv2D(int(output_channel / 16), kernel_size=3, strides=1, padding='same', use_bias=False)
+        self.bn0_1 = layers.BatchNormalization()
+        self.conv0_2 = layers.Conv2D(self.inplanes, kernel_size=3, strides=1, padding='same', use_bias=False)
+        self.bn0_2 = layers.BatchNormalization()
+        self.relu = layers.Activation('relu')
+
+        self.maxpool1 = layers.MaxPool2D(pool_size=2, padding='same')
+        self.layer1 = self._make_layer(self.output_channel_block[0], layer_dims[0])
+        self.conv1 = layers.Conv2D(self.output_channel_block[0], kernel_size=3, strides=1, padding='same', use_bias=False)
+        self.bn1 = layers.BatchNormalization()
+
+        self.maxpool2 = layers.MaxPool2D(pool_size=2, padding='same')
+        self.layer2 = self._make_layer(self.output_channel_block[1], layer_dims[1], stride=1)
+        self.conv2 = layers.Conv2D(self.output_channel_block[1], kernel_size=3, strides=1, padding='same', use_bias=False)
+        self.bn2 = layers.BatchNormalization()
+
+        self.maxpool3 = layers.MaxPool2D(pool_size=2, strides=(2, 1), padding='same')
+        self.layer3 = self._make_layer(self.output_channel_block[2], layer_dims[2], stride=1)
+        self.conv3 = layers.Conv2D(self.output_channel_block[2], kernel_size=3, strides=1, padding='same', use_bias=False)
+        self.bn3 = layers.BatchNormalization()
+
+        self.layer4 = self._make_layer(self.output_channel_block[3], layer_dims[3], stride=1)
+        # TODO: padding
+        self.conv4_1 = layers.Conv2D(self.output_channel_block[3], kernel_size=2, strides=(2, 1), padding='same', use_bias=False)
+        self.bn4_1 = layers.BatchNormalization()
+        self.conv4_2 = layers.Conv2D(self.output_channel_block[3], kernel_size=2, strides=1, padding='valid', use_bias=False)
+        self.bn4_2 = layers.BatchNormalization()
+
+    def _make_layer(self, planes, blocks, stride=1):
+        downsample = None
+        # TODO: if stride != 1:
+        if True:
+            downsample = Sequential([
+                layers.Conv2D(planes * 1, kernel_size=1, strides=stride, use_bias=False),
+                layers.BatchNormalization(),
+            ])
+
+        layers_list = [BasicBlock(planes, stride, downsample)]
+        self.inplanes = planes * 1
+        for _ in range(1, blocks):
+            layers_list.append(BasicBlock(planes))
+
+        return Sequential(layers_list)
+
+    def call(self, inputs, training=None, mask=None):
+        x = self.conv0_1(inputs)
+        x = self.bn0_1(x)
+        x = self.relu(x)
+        x = self.conv0_2(x)
+        x = self.bn0_2(x)
+        x = self.relu(x)
+
+        x = self.maxpool1(x)
         x = self.layer1(x)
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+
+        x = self.maxpool2(x)
         x = self.layer2(x)
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = self.relu(x)
+
+        x = self.maxpool3(x)
         x = self.layer3(x)
+        x = self.conv3(x)
+        x = self.bn3(x)
+        x = self.relu(x)
+
         x = self.layer4(x)
-
-        # 通过池化层
-        x = self.avgpool(x)
-        # 通过全连接层
-        x = self.fc(x)
-
-        return x
-
-    def build_resblock(self, filter_num, blocks, stride=1):
-        # 辅助函数，堆叠filter_num个BasicBlock
-        res_blocks = Sequential()
-        # 只有第一个BasicBlock的步长可能不为1，实现下采样
-        res_blocks.add(BasicBlock(filter_num, stride))
-
-        for _ in range(1, blocks):#其他BasicBlock步长都为1
-            res_blocks.add(BasicBlock(filter_num, stride=1))
-
-        return res_blocks
-
-
-def resnet18():
-    # 通过调整模块内部BasicBlock的数量和配置实现不同的ResNet
-    return ResNet([2, 2, 2, 2])
-
-
-def resnet34():
-     # 通过调整模块内部BasicBlock的数量和配置实现不同的ResNet
-    return ResNet([3, 4, 6, 3])
-
-
-class VGG_FeatureExtractor(keras.Model):
-    def __init__(self, input_channel, output_channel=512):
-        super(VGG_FeatureExtractor, self).__init__()
-        self.output_channel = [int(output_channel / 8), int(output_channel / 4),
-                               int(output_channel / 2), output_channel]  # [64, 128, 256, 512]
-        self.ConvNet = Sequential(
-            layers.Conv2D(input_channel, self.output_channel[0], 3, 1, 1), layers.ReLU(True),
-            layers.MaxPool2D(2, 2),  # 64x16x50
-            layers.Conv2D(self.output_channel[0], self.output_channel[1], 3, 1, 1), layers.ReLU(True),
-            layers.MaxPool2D(2, 2),  # 128x8x25
-            layers.Conv2D(self.output_channel[1], self.output_channel[2], 3, 1, 1), layers.ReLU(True),  # 256x8x25
-            layers.Conv2D(self.output_channel[2], self.output_channel[2], 3, 1, 1), layers.ReLU(True),
-            layers.MaxPool2D((2, 1), (2, 1)),  # 256x4x25
-            layers.Conv2D(self.output_channel[2], self.output_channel[3], 3, 1, 1, bias=False),
-            layers.BatchNormalization(self.output_channel[3]), layers.ReLU(True),  # 512x4x25
-            layers.Conv2D(self.output_channel[3], self.output_channel[3], 3, 1, 1, bias=False),
-            layers.BatchNormalization(self.output_channel[3]), layers.ReLU(True),
-            layers.MaxPool2D((2, 1), (2, 1)),  # 512x2x25
-            layers.Conv2D(self.output_channel[3], self.output_channel[3], 2, 1, 0), layers.ReLU(True))  # 512x1x24
-
-    def call(self, inputs):
-        return self.ConvNet(inputs)
-
-
-# For Gated RCNN
-class GRCL(layers.Layer):
-
-    def __init__(self, input_channel, output_channel, num_iteration, kernel_size, pad):
-        super(GRCL, self).__init__()
-        self.wgf_u = layers.Conv2D(input_channel, output_channel, 1, 1, 0, bias=False)
-        self.wgr_x = layers.Conv2D(output_channel, output_channel, 1, 1, 0, bias=False)
-        self.wf_u = layers.Conv2D(input_channel, output_channel, kernel_size, 1, pad, bias=False)
-        self.wr_x = layers.Conv2D(output_channel, output_channel, kernel_size, 1, pad, bias=False)
-
-        self.BN_x_init = layers.BatchNormalization(output_channel)
-
-        self.num_iteration = num_iteration
-        self.GRCL = [GRCL_unit(output_channel) for _ in range(num_iteration)]
-        self.GRCL = Sequential(*self.GRCL)
-
-    def call(self, inputs, training=None):
-
-        wgf_u = self.wgf_u(input)
-        wf_u = self.wf_u(input)
-        x = layers.ReLU(self.BN_x_init(wf_u))
-
-        for i in range(self.num_iteration):
-            x = self.GRCL[i](wgf_u, self.wgr_x(x), wf_u, self.wr_x(x))
+        x = self.conv4_1(x)
+        x = self.bn4_1(x)
+        x = self.relu(x)
+        x = self.conv4_2(x)
+        x = self.bn4_2(x)
+        x = self.relu(x)
 
         return x
 
-
-class GRCL_unit(keras.Model):
-    def __init__(self, output_channel):
-        super(GRCL_unit, self).__init__()
-        self.BN_gfu = layers.BatchNormalization(output_channel)
-        self.BN_grx = layers.BatchNormalization(output_channel)
-        self.BN_fu = layers.BatchNormalization(output_channel)
-        self.BN_rx = layers.BatchNormalization(output_channel)
-        self.BN_Gx = layers.BatchNormalization(output_channel)
-
-    def call(self, wgf_u, wgr_x, wf_u, wr_x):
-        G_first_term = self.BN_gfu(wgf_u)
-        G_second_term = self.BN_grx(wgr_x)
-        G = layers.Sigmoid(G_first_term + G_second_term)
-
-        x_first_term = self.BN_fu(wf_u)
-        x_second_term = self.BN_Gx(self.BN_rx(wr_x) * G)
-        x = layers.ReLU(x_first_term + x_second_term)
-
-        return x
-
-
-class RCNN_FeatureExtractor(keras.Model):
-    def __init__(self, input_channel, output_channel=512):
-        super(RCNN_FeatureExtractor, self).__init__()
-        self.output_channel = [int(output_channel / 8), int(output_channel / 4),
-                               int(output_channel / 2), output_channel]  # [64, 128, 256, 512]
-        self.ConvNet = Sequential(
-            layers.Conv2D(input_channel, self.output_channel[0], 3, 1, 1), layers.ReLU(True),
-            layers.MaxPool2D(2, 2),  # 64 x 16 x 50
-            GRCL(self.output_channel[0], self.output_channel[0], num_iteration=5, kernel_size=3, pad=1),
-            layers.MaxPool2D(2, 2),  # 64 x 8 x 25
-            GRCL(self.output_channel[0], self.output_channel[1], num_iteration=5, kernel_size=3, pad=1),
-            layers.MaxPool2D(2, (2, 1), (0, 1)),  # 128 x 4 x 26
-            GRCL(self.output_channel[1], self.output_channel[2], num_iteration=5, kernel_size=3, pad=1),
-            layers.MaxPool2D(2, (2, 1), (0, 1)),  # 256 x 2 x 27
-            layers.Conv2D(self.output_channel[2], self.output_channel[3], 2, 1, 0, bias=False),
-            layers.BatchNormalization(self.output_channel[3]), layers.ReLU(True))  # 512 x 1 x 26
-
-    def call(self, inputs):
-        return self.ConvNet(inputs)

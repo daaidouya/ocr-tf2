@@ -1,11 +1,10 @@
 import tensorflow as tf
-from tensorflow import keras
 from tensorflow.keras import layers, Sequential
-
 # TODO
 device = tf.device()
 
-class Attention(keras.Model):
+
+class Attention(tf.keras.Model):
 
     def __init__(self, input_size, hidden_size, num_classes):
         super(Attention, self).__init__()
@@ -53,3 +52,32 @@ class Attention(keras.Model):
                 targets = next_input
 
         return probs  # batch_size x num_steps x num_classes
+
+
+class AttentionCell(tf.keras.Model):
+
+    def __init__(self, input_size, hidden_size, num_embeddings):
+        super(AttentionCell, self).__init__()
+        self.i2h = layers.Dense(units=hidden_size, use_bias=False)
+        self.h2h = layers.Dense(units=hidden_size, use_bias=False)
+        self.score = layers.Dense(units=1, use_bias=False)
+
+        # self.rnn = nn.LSTMCell(input_size + num_embeddings, hidden_size)
+        self.rnn = layers.LSTMCell(units=hidden_size)()
+        self.hidden_size = hidden_size
+
+    def call(self, prev_hidden, batch_H, char_onehots):
+
+        # [batch_size x num_encoder_step x num_channel] -> [batch_size x num_encoder_step x hidden_size]
+
+        batch_H_proj = self.i2h(batch_H)
+        prev_hidden_proj = tf.expand_dims(self.h2h(prev_hidden[0]), axis=1)
+        e = self.score(tf.nn.tanh(batch_H_proj + prev_hidden_proj))  # batch_size x num_encoder_step * 1
+        alpha = tf.nn.softmax(e, axis=1)
+
+        context = tf.squeeze(tf.matmul(tf.transpose(alpha, [0, 2, 1]), batch_H), axis=1)
+        concat_context = tf.concat([context, char_onehots], 1)  # batch_size x (num_channel + num_embedding)
+        # TODO
+        cur_hidden = self.rnn(inputs=concat_context, states=prev_hidden)
+        return cur_hidden, alpha
+

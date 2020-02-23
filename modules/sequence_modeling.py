@@ -1,21 +1,28 @@
 import tensorflow as tf
-from tensorflow import keras
 from tensorflow.keras import layers, Sequential
 
 
-class BidirectionalLSTM(keras.Model):
+class LSTM_SequenceModeling(tf.keras.Model):
 
-    def __init__(self, input_size, hidden_size, output_size):
-        super(BidirectionalLSTM, self).__init__()
-        self.rnn = layers.LSTMCell(input_size, hidden_size, bidirectional=True, batch_first=True)
-        self.linear = layers.Dense(hidden_size * 2, output_size)
+    def __init__(self, hidden_size):
+        super(LSTM_SequenceModeling, self).__init__()
+        # x = keras.layers.Reshape((-1, 512))(x)
+        # x = keras.layers.Bidirectional(
+        #     keras.layers.LSTM(units=256, return_sequences=True))(x)
+        # x = keras.layers.Bidirectional(
+        #     keras.layers.LSTM(units=256, return_sequences=True))(x)
 
-    def call(self, inputs):
-        """
-        input : visual feature [batch_size x T x input_size]
-        output : contextual feature [batch_size x T x output_size]
-        """
-        self.rnn.flatten_parameters()
-        recurrent, _ = self.rnn(inputs)  # batch_size x T x input_size -> batch_size x T x (2*hidden_size)
-        output = self.linear(recurrent)  # batch_size x T x output_size
-        return output
+        self.rnn1 = layers.Bidirectional(layers.LSTM(units=hidden_size, return_sequences=True))
+        # self.linear = nn.Linear(hidden_size * 2, output_size)
+        self.linear1 = layers.Dense(units=hidden_size)
+
+        self.rnn2 = layers.Bidirectional(layers.LSTM(units=hidden_size, return_sequences=True))
+        # self.linear = nn.Linear(hidden_size * 2, output_size)
+        self.linear2 = layers.Dense(units=hidden_size)
+
+    def call(self, inputs, training=None, mask=None):
+        out = self.rnn1(inputs)
+        out = self.linear1(out)
+        out = self.rnn2(out)
+        out = self.linear2(out)
+        return out
