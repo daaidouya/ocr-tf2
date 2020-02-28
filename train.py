@@ -9,6 +9,7 @@ from model import Model
 from dataset import OCR_DataLoader, map_and_count
 
 from config import args
+from utils import CTCLabelConverter, AttnLabelConverter
 
 with open(args.table_path, "r") as f:
     INT_TO_CHAR = [char.strip() for char in f]
@@ -124,10 +125,10 @@ def workflow():
 
     """ model configuration """
     # TODO
-    # if 'CTC' in args.Prediction:
-    #     converter = CTCLabelConverter(args.character)
-    # else:
-    #     converter = AttnLabelConverter(args.character)
+    if 'CTC' in args.Prediction:
+        converter = CTCLabelConverter(INT_TO_CHAR)
+    else:
+        converter = AttnLabelConverter(INT_TO_CHAR)
 
     # args.num_class = len(converter.character)
     args.num_class = NUM_CLASSES
@@ -142,17 +143,15 @@ def workflow():
     在train_one_step函数中设置，目前只考虑CTC Loss 
     """
     # setup optimizer
-    # TODO: lr_schedule 报错
     lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-        args.learning_rate,
-        decay_steps=10000,
-        decay_rate=0.96,
-        staircase=True)
+        tf.convert_to_tensor(args.learning_rate, dtype=tf.dtypes.float64),
+        decay_steps=args.decay_steps,
+        decay_rate=args.decay_rate,
+        staircase=False)
     if args.adam:
-        # TODO: Adam优化器 W tensorflow/core/util/ctc/ctc_loss_calculator.cc:145] No valid path found.
-        optimizer = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
+        optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
     else:
-        optimizer = tf.keras.optimizers.Adadelta(learning_rate=args.learning_rate, rho=args.rho, epsilon=args.epsilon)
+        optimizer = tf.keras.optimizers.Adadelta(learning_rate=lr_schedule, rho=args.rho, epsilon=args.epsilon)
     print("Optimizer:")
     print(optimizer)
 

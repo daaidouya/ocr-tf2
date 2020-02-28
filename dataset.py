@@ -82,7 +82,7 @@ class OCR_DataLoader(object):
             default_value=blank_index)
 
         dataset = tf.data.Dataset.from_tensor_slices((img_paths, labels))
-        print(dataset.element_spec)
+        # print(dataset.element_spec)
         if shuffle:
             dataset = dataset.shuffle(buffer_size=self.size, seed=6657)
         dataset = dataset.map(self._decode_and_resize)

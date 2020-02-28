@@ -26,7 +26,6 @@ class VGG_FeatureExtractor(tf.keras.Model):
         ])
 
     def call(self, inputs, training=None, mask=None):
-        # self.ConvNet.summary()
         return self.ConvNet(inputs)
 
 
@@ -39,23 +38,17 @@ class RCNN_FeatureExtractor(tf.keras.Model):
                                int(output_channel / 2), output_channel]  # [64, 128, 256, 512]
         self.ConvNet = Sequential([
             layers.Conv2D(self.output_channel[0], kernel_size=3, strides=1, padding='same', activation='relu'),
-            layers.MaxPool2D(pool_size=(2, 2), strides=2),
-
+            layers.MaxPooling2D(pool_size=(2, 2)),
             GRCL(self.output_channel[0], num_iteration=5, kernel_size=3, pad=1),
-
-            layers.MaxPool2D(pool_size=(2, 2), strides=2),
+            layers.MaxPool2D(pool_size=(2, 2)),
 
             GRCL(self.output_channel[1], num_iteration=5, kernel_size=3, pad=1),
-
-            # layers.MaxPool2D(2, (2, 1), (0, 1)),  # 128 x 4 x 26
-            layers.MaxPool2D(pool_size=(2, 2), strides=2),
+            layers.MaxPool2D(pool_size=(2, 2), strides=(2, 1), padding='same'),
 
             GRCL(self.output_channel[2], num_iteration=5, kernel_size=3, pad=1),
+            layers.MaxPool2D(pool_size=(2, 2), strides=(2, 1), padding='same'),
 
-            # layers.MaxPool2D(2, (2, 1), (0, 1)),  # 256 x 2 x 27
-            layers.MaxPool2D(pool_size=(2, 2), strides=2),
-
-            layers.Conv2D(self.output_channel[3], kernel_size=2, strides=1, padding='valid'),
+            layers.Conv2D(self.output_channel[3], kernel_size=2, strides=1, padding='valid', use_bias=False),
             layers.BatchNormalization(), layers.ReLU(),
         ])
 
@@ -66,7 +59,7 @@ class RCNN_FeatureExtractor(tf.keras.Model):
 class ResNet_FeatureExtractor(tf.keras.Model):
     """ FeatureExtractor of FAN (http://openaccess.thecvf.com/content_ICCV_2017/papers/Cheng_Focusing_Attention_Towards_ICCV_2017_paper.pdf) """
 
-    def __init__(self, input_channel, output_channel=512):
+    def __init__(self, output_channel=512):
         super(ResNet_FeatureExtractor, self).__init__()
         self.ConvNet = ResNet(output_channel, [1, 2, 5, 3])
 
@@ -77,18 +70,18 @@ class ResNet_FeatureExtractor(tf.keras.Model):
 # For Gated RCNN
 class GRCL(layers.Layer):
 
-    def __init__(self, output_channel, num_iteration, kernel_size, pad):
+    def __init__(self, output_channel, num_iteration=5, kernel_size=3, pad=1):
         super(GRCL, self).__init__()
         self.wgf_u = layers.Conv2D(output_channel, kernel_size=1, strides=1, padding='valid', use_bias=False)
         self.wgr_x = layers.Conv2D(output_channel, kernel_size=1, strides=1, padding='valid', use_bias=False)
 
+        pad = 'same' if pad != 0 else 'valid'
         self.wf_u = layers.Conv2D(output_channel, kernel_size=kernel_size, strides=1, padding=pad, use_bias=False)
         self.wr_x = layers.Conv2D(output_channel, kernel_size=kernel_size, strides=1, padding=pad, use_bias=False)
         self.BN_x_init = layers.BatchNormalization()
 
         self.num_iteration = num_iteration
         self.GRCL = [GRCL_unit() for _ in range(num_iteration)]
-        self.GRCL = Sequential(self.GRCL)
 
     def call(self, inputs, **kwargs):
         """ The inputs of GRCL is consistant over time t, which is denoted by u(0)

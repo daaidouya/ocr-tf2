@@ -48,6 +48,7 @@ if __name__ == "__main__":
 
     checkpoint = tf.train.Checkpoint(model=model)
     checkpoint.restore(tf.train.latest_checkpoint(args.checkpoint))
+    # checkpoint.restore(tf.train.latest_checkpoint(args.checkpoint, 'ckpt-1250'))
     if tf.train.latest_checkpoint(args.checkpoint):
         print(f"Restored from {tf.train.latest_checkpoint(args.checkpoint)}")
     else:
