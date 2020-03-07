@@ -4,7 +4,7 @@ from tensorflow.keras import layers, Sequential
 # from modules.transformation import TPS_SpatialTransformerNetwork
 from modules.feature_extraction import VGG_FeatureExtractor, RCNN_FeatureExtractor, ResNet_FeatureExtractor
 from modules.sequence_modeling import LSTM_SequenceModeling
-# from modules.prediction import Attention
+from modules.prediction import Attention_Prediction
 
 
 class Model(tf.keras.Model):
@@ -43,15 +43,15 @@ class Model(tf.keras.Model):
         if opt.SequenceModeling == 'BiLSTM':
             self.SequenceModeling = LSTM_SequenceModeling(hidden_size=opt.hidden_size)
         else:
-            print('No SequenceModeling module specified')
+            print('No SequenceModeling module specified') 
 
         """ Prediction """
         if opt.Prediction == 'CTC':
             self.Prediction = layers.Dense(units=opt.num_class)
         elif opt.Prediction == 'Attn':
             # TODO
-            # self.Prediction = Attention(self.SequenceModeling_output, opt.hidden_size, opt.num_class)
-            print('Attn')
+            # decoder = Decoder(vocab_size, embedding_dim, units, BATCH_SIZE)
+            self.Prediction = Attention_Prediction(vocab_size=opt.vocab_size, embedding_dim=opt.embedding_dim, dec_units=opt.num_class)
         else:
             raise Exception('Prediction is neither CTC or Attn')
 

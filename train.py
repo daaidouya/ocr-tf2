@@ -86,28 +86,34 @@ def val(model, dataset, step, num_samples):
 
 
 @tf.function
-def train_one_step(model, optimizer, x, y):
+def train_one_step(model, optimizer, x, y, attn_used=False):
     with tf.GradientTape() as tape:
-        logits = model(x, training=True)
-        logit_length = tf.fill([tf.shape(logits)[0]], tf.shape(logits)[1])
-        loss = tf.nn.ctc_loss(
-            labels=y,
-            logits=logits,
-            label_length=None,
-            logit_length=logit_length,
-            logits_time_major=False,
-            # TODO
-            blank_index=BLANK_INDEX)
-        loss = tf.reduce_mean(loss)
+        if not attn_used:
+            logits = model(x, training=True)
+            logit_length = tf.fill([tf.shape(logits)[0]], tf.shape(logits)[1])
+            loss = tf.nn.ctc_loss(
+                labels=y,
+                logits=logits,
+                label_length=None,
+                logit_length=logit_length,
+                logits_time_major=False,
+                # TODO
+                blank_index=BLANK_INDEX)
+            loss = tf.reduce_mean(loss)
+        else:
+            logits = model(x, training=True)
+            mask = 1 - np.equal(logits, 0)
+            loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=y, logits=logits) * mask
+            loss = tf.reduce_mean(loss)
     grads = tape.gradient(loss, model.trainable_variables)
     optimizer.apply_gradients(zip(grads, model.trainable_variables))
     return loss
 
 
-def train(model, optimizer, dataset, log_freq=10):
+def train(model, optimizer, dataset, log_freq=10, attn_used=False):
     avg_loss = tf.keras.metrics.Mean(name="loss", dtype=tf.float32)
     for x, y in dataset:
-        loss = train_one_step(model, optimizer, x, y)
+        loss = train_one_step(model, optimizer, x, y, attn_used)
         avg_loss.update_state(loss)
         if tf.equal(optimizer.iterations % log_freq, 0):
             tf.summary.scalar("loss", avg_loss.result(),
@@ -125,9 +131,13 @@ def workflow():
 
     """ model configuration """
     # TODO
+    attn_used = False
     if 'CTC' in args.Prediction:
         converter = CTCLabelConverter(INT_TO_CHAR)
     else:
+        attn_used = True
+        args.vocab_size = 25
+        args.embedding_dim = 256
         converter = AttnLabelConverter(INT_TO_CHAR)
 
     # args.num_class = len(converter.character)
@@ -140,7 +150,6 @@ def workflow():
 
     """ 
     setup loss
-    在train_one_step函数中设置，目前只考虑CTC Loss 
     """
     # setup optimizer
     lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
@@ -183,7 +192,7 @@ def workflow():
 
     for epoch in range(1, args.epochs + 1):
         with train_summary_writer.as_default():
-            train(model, optimizer, train_dl())
+            train(model, optimizer, train_dl(), attn_used)
         if not (epoch - 1) % args.save_freq:
             checkpoint_path = manager.save(optimizer.iterations)
             print(f"Model saved to {checkpoint_path}")

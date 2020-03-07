@@ -12,6 +12,7 @@ class OCR_Config(object):
         self.train_annotation_paths = './example/annotations.txt'
         self.val_annotation_paths = './example/val_annotations.txt'
         self.table_path = './example/characters.txt'  # characters list.
+        self.images = ''
         self.experiment_name = 'test'
         self.blank_index = 1
         self.batch_size = 8

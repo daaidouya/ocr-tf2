@@ -2,69 +2,73 @@ import tensorflow as tf
 from tensorflow.keras import layers, Sequential
 
 
-class Attention(tf.keras.Model):
-
-    def __init__(self, hidden_size, num_classes):
-        super(Attention, self).__init__()
-        self.attention_cell = AttentionCell(hidden_size)
-        self.hidden_size = hidden_size
-        self.num_classes = num_classes
-        self.generator = layers.Dense(units=num_classes)
-
-    def _char_to_onehot(self, input_char, onehot_dim=38):
-        input_char = input_char.unsqueeze(1)
-        batch_size = input_char.size(0)
-        # one_hot = torch.FloatTensor(batch_size, onehot_dim).zero_()
-        one_hot = tf.ones((batch_size, onehot_dim))
-        # TODO one_hot = one_hot.scatter_(1, input_char, 1)
-        one_hot = tf.scatter_nd(indices=input_char, updates=one_hot, shape=(batch_size, onehot_dim))
-        return one_hot
-
-    def call(self, batch_H, text, is_train=True, batch_max_length=25):
-        """
-        input:
-            batch_H : contextual_feature H = hidden state of encoder. [batch_size x num_steps x num_classes]
-            text : the text-index of each image. [batch_size x (max_length+1)]. +1 for [GO] token. text[:, 0] = [GO].
-        output: probability distribution at each step [batch_size x num_steps x num_classes]
-        """
-        batch_size = batch_H.size(0)
-        num_steps = batch_max_length + 1  # +1 for [s] at end of sentence.
-
-        output_hiddens = torch.FloatTensor(batch_size, num_steps, self.hidden_size).fill_(0).to(device)
-        output_hiddens = tf.tensor_scatter_nd_sub
-        hidden = (torch.FloatTensor(batch_size, self.hidden_size).fill_(0).to(device),
-                  torch.FloatTensor(batch_size, self.hidden_size).fill_(0).to(device))
-
-        for i in range(num_steps):
-            # one-hot vectors for a i-th char. in a batch
-            char_onehots = self._char_to_onehot(text[:, i], onehot_dim=self.num_classes)
-            # hidden : decoder's hidden s_{t-1}, batch_H : encoder's hidden H, char_onehots : one-hot(y_{t-1})
-            hidden, alpha = self.attention_cell(hidden, batch_H, char_onehots)
-            output_hiddens[:, i, :] = hidden[0]  # LSTM hidden index (0: hidden, 1: Cell)
-        probs = self.generator(output_hiddens)
-
-        return probs  # batch_size x num_steps x num_classes
+def gru(units):
+    if tf.test.is_gpu_available():
+        return tf.keras.layers.CuDNNGRU(units,
+                                        return_sequences=True,
+                                        return_state=True,
+                                        recurrent_initializer='glorot_uniform')
+    else:
+        return tf.keras.layers.GRU(units,
+                                   return_sequences=True,
+                                   return_state=True,
+                                   recurrent_activation='sigmoid',
+                                   recurrent_initializer='glorot_uniform')
 
 
-class AttentionCell(layers.Layer):
+class Attention_Prediction(tf.keras.Model):
+    def __init__(self, vocab_size, embedding_dim, dec_units):
+        super(Attention_Prediction, self).__init__()
+        self.dec_units = dec_units
+        self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
+        self.gru = gru(self.dec_units)
+        self.fc = tf.keras.layers.Dense(vocab_size)
+        self.attention = AttentionCell(self.dec_units)
 
-    def __init__(self, hidden_size):
+    def call(self, x, hidden, enc_output):
+        context_vector, attention_weights = self.attention(enc_output, hidden)
+
+        # x shape after passing through embedding == (batch_size, 1, embedding_dim)
+        x1 = self.embedding(x)
+
+        # x shape after concatenation == (batch_size, 1, embedding_dim + hidden_size)
+        x2 = tf.concat([tf.expand_dims(context_vector, 1), x1], axis=-1)
+
+        # passing the concatenated vector to the GRU
+        output, state = self.gru(x2)
+
+        # output shape == (batch_size * 1, hidden_size)
+        output = tf.reshape(output, (-1, output.shape[2]))
+
+        # output shape == (batch_size * 1, vocab)
+        x = self.fc(output)
+
+        return x, state, attention_weights
+
+
+class AttentionCell(tf.keras.Model):
+    def __init__(self, units):
         super(AttentionCell, self).__init__()
-        self.i2h = layers.Dense(units=hidden_size, use_bias=False)
-        self.h2h = layers.Dense(units=hidden_size)
-        # TODO self.score = nn.Linear(hidden_size, 1, bias=False)
-        self.score = layers.Dense(units=1, use_bias=False)
-        self.rnn = layers.LSTMCell(units=hidden_size)
-        self.hidden_size = hidden_size
+        self.W1 = tf.keras.layers.Dense(units)
+        self.W2 = tf.keras.layers.Dense(units)
+        self.V = tf.keras.layers.Dense(1)
 
-    def call(self, prev_hidden, batch_H, char_onehots):
-        # [batch_size x num_encoder_step x num_channel] -> [batch_size x num_encoder_step x hidden_size]
-        batch_H_proj = self.i2h(batch_H)
-        prev_hidden_proj = tf.expand_dims(self.h2h(prev_hidden[0]), axis=1)
-        e = self.score(tf.nn.tanh(batch_H_proj + prev_hidden_proj))  # batch_size x num_encoder_step * 1
+    def call(self, features, hidden):
+        # features(CNN_encoder output) shape == (batch_size, 25, embedding_dim)
 
-        alpha = tf.nn.softmax(e, axis=1)
-        context = torch.bmm(alpha.permute(0, 2, 1), batch_H).squeeze(1)  # batch_size x num_channel
-        concat_context = tf.concat([context, char_onehots], axis=1)  # batch_size x (num_channel + num_embedding)
-        cur_hidden = self.rnn(concat_context, prev_hidden)
-        return cur_hidden, alpha
+        # hidden shape == (batch_size, hidden_size)
+        # hidden_with_time_axis shape == (batch_size, 1, hidden_size)
+        hidden_with_time_axis = tf.expand_dims(hidden, 1)
+
+        # score shape == (batch_size, 25, hidden_size)
+        score = tf.nn.tanh(self.W1(features) + self.W2(hidden_with_time_axis))
+
+        # attention_weights shape == (batch_size, 25, 1)
+        # we get 1 at the last axis because we are applying score to self.V
+        attention_weights = tf.nn.softmax(self.V(score), axis=1)
+
+        # context_vector shape after sum == (batch_size, hidden_size)
+        context_vector = attention_weights * features
+        context_vector = tf.reduce_sum(context_vector, axis=1)
+
+        return context_vector, attention_weights

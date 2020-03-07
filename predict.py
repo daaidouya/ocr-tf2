@@ -19,9 +19,9 @@ def read_image(path):
     except Exception:
         print("Invalid image: {}".format(path))
         global num_invalid
-        return tf.zeros((32, args.image_width, 1))
+        return tf.zeros((args.image_height, args.image_width, 1))
     img = tf.image.convert_image_dtype(img, tf.float32)
-    if args.keep_ratio:
+    if args.keep_ratio_with_pad:
         width = round(32 * img.shape[1] / img.shape[0])
     else:
         width = args.image_width
@@ -63,8 +63,8 @@ def predict():
             img = read_image(args.images)
             imgs = tf.expand_dims(img, 0)
 
-    model = tf.keras.models.load_model(args.model)
-    print("Restored from {}".format(args.model))
+    model = tf.keras.models.load_model(args.checkpoint)
+    print("Restored from {}".format(args.checkpoint))
 
     logits = model(imgs, training=False)
 
